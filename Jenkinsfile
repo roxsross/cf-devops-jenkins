@@ -1,27 +1,13 @@
 pipeline {
     agent any 
     stages {
-        stage('Check listar') {
-
-            steps { 
-                sh '''
-                echo "contenido del workspace"
-                ls -la
-                '''
-            }
-
-        }
-
         stage('Install') {
-
             agent {
             docker { image 'node:24-alpine' }
             }
             steps { 
                 sh 'npm install'
-
             }
-
         } // stage install
 
         stage('Test') {
@@ -34,8 +20,17 @@ pipeline {
 
             }
 
-        } // stage test
+        } // stage build
+        stage('Build') {
+            steps { 
+                sh 'echo "Building Docker Image..."'
+                sh 'docker build -t my-node-app .'
+            }
 
+        }
     } // stages
-
+    post {
+        success { echo '✓ Build OK' }
+        failure { echo '✗ Algo falló' }
+    }
 } //end pipeline
