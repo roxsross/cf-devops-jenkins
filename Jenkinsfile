@@ -1,5 +1,8 @@
 pipeline {
     agent any 
+    environment {
+       DOCKER_HUB_LOGIN = credentials('dockerhub')
+    }
     stages {
         stage('Install') {
             agent {
@@ -24,7 +27,16 @@ pipeline {
         stage('Build') {
             steps { 
                 sh 'echo "Building Docker Image..."'
-                sh 'docker build -t my-node-app .'
+                sh 'docker build -t roxsross12/node-app-node-cf:1.0.0 .'
+            }
+
+        }
+
+        stage('Deploy') {
+            steps { 
+                sh 'docker login -u $DOCKER_HUB_LOGIN_USR -p $DOCKER_HUB_LOGIN_PSW'
+                sh 'echo "Pushing Docker Image..."'
+                sh 'docker push roxsross12/node-app-node-cf:1.0.0'
             }
 
         }
