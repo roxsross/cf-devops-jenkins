@@ -24,6 +24,18 @@ pipeline {
 
         } // stage install
 
+        stage('Test') {
+
+            agent {
+            docker { image 'node:24-alpine' }
+            }
+            steps { 
+                sh 'npm test'
+
+            }
+
+        } // stage test
+
     } // stages
 
 } //end pipeline
