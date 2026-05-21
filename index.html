@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mi Sitio - Desplegado con Jenkins</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🚀 Mi Sitio Web</h1>
+            <p class="subtitulo">Desplegado automáticamente con Jenkins a S3</p>
+        </header>
+
+        <main>
+            <section class="info">
+                <h2>¿Cómo llegó este sitio acá?</h2>
+                <ol>
+                    <li>Un desarrollador hizo <code>git push</code></li>
+                    <li>Jenkins detectó el cambio</li>
+                    <li>Jenkins ejecutó los tests</li>
+                    <li>Jenkins subió los archivos a S3</li>
+                    <li>¡Y acá estás viéndolo!</li>
+                </ol>
+            </section>
+
+            <section class="stats" id="stats">
+                <div class="stat">
+                    <span class="numero" id="deploy-count">0</span>
+                    <span class="label">Deploys</span>
+                </div>
+                <div class="stat">
+                    <span class="numero" id="current-time">--:--</span>
+                    <span class="label">Hora del deploy</span>
+                </div>
+                <div class="stat">
+                    <span class="numero">✅</span>
+                    <span class="label">Tests pasando</span>
+                </div>
+            </section>
+
+            <section class="tech">
+                <h2>Tecnologías usadas</h2>
+                <div class="badges">
+                    <span class="badge">Jenkins</span>
+                    <span class="badge">AWS S3</span>
+                    <span class="badge">LocalStack</span>
+                    <span class="badge">Docker</span>
+                    <span class="badge">HTML/CSS/JS</span>
+                </div>
+            </section>
+        </main>
+
+        <footer>
+            <p>Hecho con ❤️ en el curso de Jenkins</p>
+        </footer>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>
