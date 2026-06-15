@@ -5,6 +5,8 @@
 @Library('devsecops@main') _
 
 devSecOpsPipeline([
-    secretsEnabled   : true,
+    secretsEnabled : true,
+    sastEnabled    : false,
+    scaEnabled     : false,
+    dastEnabled    : false,
 ])
-
