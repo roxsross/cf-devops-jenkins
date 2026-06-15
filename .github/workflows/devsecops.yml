@@ -3,6 +3,38 @@ on:
     push: 
         branches: [master]
 jobs:
+    sast-secrets:
+      name: SAST - Secret Scanning
+      runs-on: ubuntu-latest
+      permissions:
+        security-events: write
+        contents: read
+      steps:
+        - name: Checkout (historial completo)
+          uses: actions/checkout@v6
+          with:
+            fetch-depth: 0   
+        - name: Scan con Betterleaks
+          run: |
+            docker run --rm \
+              --user "$(id -u):$(id -g)" \
+              -e HOME=/tmp \
+              -v "$(pwd):/repo" \
+              ghcr.io/betterleaks/betterleaks:latest \
+              git /repo \
+                --report-format sarif \
+                --report-path /repo/betterleaks.sarif \
+                --exit-code 0 \
+                -v
+          continue-on-error: true
+
+        - name: Upload resultados a GitHub Security
+          uses: github/codeql-action/upload-sarif@v4
+          if: always()
+          with:
+            sarif_file: betterleaks.sarif
+            category: betterleaks
+
     sast-codeql:
         runs-on: ubuntu-latest
         permissions:
@@ -83,6 +115,7 @@ jobs:
 
     dast-owasp-zap:
       runs-on: ubuntu-latest
+      needs: [sast-secrets, sast-codeql, sast-semgrep, sca-snyk]
       permissions:
           contents: read
           security-events: write
