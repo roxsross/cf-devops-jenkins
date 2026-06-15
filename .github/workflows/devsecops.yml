@@ -80,3 +80,129 @@ jobs:
           with:
             sarif_file: snyk-results.sarif
             category: snyk-sca
+
+    dast-owasp-zap:
+      runs-on: ubuntu-latest
+      permissions:
+          contents: read
+          security-events: write
+      steps:
+        - uses: actions/checkout@v6
+
+        - name: Build app Docker image
+          run: docker build -t app-target .
+
+        - name: Run app container
+          run: |
+            docker run -d \
+              --name app-target \
+              -p 3000:3000 \
+              app-target
+
+        - name: Wait for app to be ready
+          run: |
+            for i in $(seq 1 30); do
+              if curl -sf http://localhost:3000; then
+                echo "App is up"
+                exit 0
+              fi
+              echo "Waiting... ($i/30)"
+              sleep 2
+            done
+            echo "App did not start in time" >&2
+            docker logs app-target
+            exit 1
+
+        - name: Run OWASP ZAP baseline scan
+          run: |
+            docker run --rm \
+              --network host \
+              -v "$(pwd):/zap/wrk:rw" \
+              ghcr.io/zaproxy/zaproxy:stable \
+              zap-baseline.py \
+              -t http://localhost:3000 \
+              -r zap-report.html \
+              -J zap-report.json \
+              -x zap-report.xml \
+              -I
+
+        - name: Convert ZAP JSON to SARIF
+          if: always()
+          run: |
+            cat zap-report.json | python3 -c "
+            import json, sys
+
+            data = json.load(sys.stdin)
+            sarif = {
+              'version': '2.1.0',
+              '\$schema': 'https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json',
+              'runs': [{
+                'tool': {
+                  'driver': {
+                    'name': 'OWASP ZAP',
+                    'version': 'stable',
+                    'rules': []
+                  }
+                },
+                'results': []
+              }]
+            }
+
+            rules = {}
+            results = []
+
+            for site in data.get('site', []):
+              for alert in site.get('alerts', []):
+                rule_id = alert.get('pluginid', 'unknown')
+                risk = alert.get('riskdesc', 'Informational')
+                level = 'warning'
+                if 'High' in risk:
+                  level = 'error'
+                elif 'Informational' in risk or 'False' in risk:
+                  level = 'note'
+
+                if rule_id not in rules:
+                  rules[rule_id] = {
+                    'id': rule_id,
+                    'name': alert.get('alert', rule_id),
+                    'shortDescription': {'text': alert.get('alert', rule_id)},
+                    'fullDescription': {'text': alert.get('desc', '')},
+                    'helpUri': alert.get('reference', ''),
+                    'properties': {'security-severity': str(alert.get('riskcode', 0))}
+                  }
+
+                for instance in alert.get('instances', [{}]):
+                  results.append({
+                    'ruleId': rule_id,
+                    'level': level,
+                    'message': {'text': instance.get('evidence', alert.get('alert', ''))},
+                    'locations': [{
+                      'physicalLocation': {
+                        'artifactLocation': {'uri': instance.get('uri', site.get('@name', 'unknown'))},
+                        'region': {'startLine': 1}
+                      }
+                    }]
+                  })
+
+            sarif['runs'][0]['tool']['driver']['rules'] = list(rules.values())
+            sarif['runs'][0]['results'] = results
+            print(json.dumps(sarif, indent=2))
+            " > zap-results.sarif
+
+        - name: Upload ZAP SARIF to GitHub Code Scanning
+          uses: github/codeql-action/upload-sarif@v4
+          if: always()
+          with:
+            sarif_file: zap-results.sarif
+            category: owasp-zap-dast
+
+        - name: Upload ZAP HTML report as artifact
+          uses: actions/upload-artifact@v4
+          if: always()
+          with:
+            name: zap-report
+            path: zap-report.html
+
+        - name: Stop app container
+          if: always()
+          run: docker stop app-target && docker rm app-target
