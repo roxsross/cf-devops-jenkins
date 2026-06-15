@@ -7,6 +7,4 @@
 devSecOpsPipeline([
     secretsEnabled : true,
     sastEnabled    : true,
-    scaEnabled     : false,
-    dastEnabled    : false,
 ])
