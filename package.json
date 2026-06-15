@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "description": "Sitio web estático desplegado con Jenkins a S3",
   "scripts": {
+    "start": "npx serve -l 3000 .",
     "test": "jest --verbose"
   },
   "devDependencies": {

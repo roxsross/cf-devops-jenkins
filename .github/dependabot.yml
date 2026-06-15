@@ -6,7 +6,8 @@ updates:
     directory: "/"
     schedule:
       interval: "daily"
-    open-pull-requests-limit: 10
+    target-branch: "master"
+    open-pull-requests-limit: 5
     labels:
       - "security"
       - "dependencies"
@@ -15,6 +16,7 @@ updates:
     directory: "/"
     schedule:
       interval: "daily"
+    target-branch: "master"
     open-pull-requests-limit: 5
     labels:
       - "security"

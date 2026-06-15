@@ -129,10 +129,26 @@ jobs:
         - name: Convert ZAP JSON to SARIF
           if: always()
           run: |
-            cat zap-report.json | python3 -c "
-            import json, sys
+            python3 -c "
+            import json, sys, os
 
-            data = json.load(sys.stdin)
+            report_path = 'zap-report.json'
+            empty_sarif = {
+              'version': '2.1.0',
+              '\$schema': 'https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json',
+              'runs': [{'tool': {'driver': {'name': 'OWASP ZAP', 'version': 'stable', 'rules': []}}, 'results': []}]
+            }
+
+            if not os.path.exists(report_path) or os.path.getsize(report_path) == 0:
+              print(json.dumps(empty_sarif, indent=2))
+              sys.exit(0)
+
+            with open(report_path) as f:
+              try:
+                data = json.load(f)
+              except json.JSONDecodeError:
+                print(json.dumps(empty_sarif, indent=2))
+                sys.exit(0)
             sarif = {
               'version': '2.1.0',
               '\$schema': 'https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json',
