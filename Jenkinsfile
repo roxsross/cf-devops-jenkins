@@ -7,4 +7,5 @@
 devSecOpsPipeline([
     secretsEnabled : true,
     sastEnabled    : true,
+    failOnSeverity : 'HIGH',
 ])
