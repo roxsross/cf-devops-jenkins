@@ -5,7 +5,386 @@ on:
 
 env:
   IMAGE_NAME: ${{ github.repository_owner }}/mi-sitio-web
-  IMAGE_TAG: ${{ github.sha }}
+
+jobs:
+  # ─────────────────────────────────────────
+  # FASE 1 – CI
+  # ─────────────────────────────────────────
+  init:
+    name: "CI · Init"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Cache node_modules
+        uses: actions/cache@v4
+        with:
+          path: node_modules
+          key: ${{ runner.os }}-node-${{ hashFiles('package-lock.json') }}
+
+  test:
+    name: "CI · Test"
+    runs-on: ubuntu-latest
+    needs: [init]
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Restore node_modules
+        uses: actions/cache@v4
+        with:
+          path: node_modules
+          key: ${{ runner.os }}-node-${{ hashFiles('package-lock.json') }}
+
+      - name: Run tests
+        run: npm test
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: test-results
+          path: coverage/
+
+  # build y los 4 SAST/SCA corren en paralelo después de test
+  build:
+    name: "CI · Build"
+    runs-on: ubuntu-latest
+    needs: [test]
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ env.IMAGE_NAME }}
+          tags: |
+            type=sha,prefix=,format=short
+            type=raw,value=latest
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+  sast-secrets:
+    name: "CI · SAST Secrets"
+    runs-on: ubuntu-latest
+    needs: [test]
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Scan con Betterleaks
+        run: |
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            -e HOME=/tmp \
+            -v "$(pwd):/repo" \
+            ghcr.io/betterleaks/betterleaks:latest \
+            git /repo \
+              --report-format sarif \
+              --report-path /repo/betterleaks.sarif \
+              --exit-code 0 \
+              -v
+        continue-on-error: true
+      - name: Upload resultados a GitHub Security
+        uses: github/codeql-action/upload-sarif@v4
+        if: always()
+        with:
+          sarif_file: betterleaks.sarif
+          category: betterleaks
+
+  sast-codeql:
+    name: "CI · SAST CodeQL"
+    runs-on: ubuntu-latest
+    needs: [test]
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v6
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v4
+        with:
+          languages: javascript-typescript
+          build-mode: none
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v4
+        with:
+          category: "/language:javascript-typescript"
+
+  sast-semgrep:
+    name: "CI · SAST Semgrep"
+    runs-on: ubuntu-latest
+    needs: [test]
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v6
+      - name: Run Semgrep
+        run: |
+          docker run --rm \
+            -v "$(pwd):/src" \
+            semgrep/semgrep:latest \
+            semgrep scan \
+            --config=p/security-audit \
+            --config=p/nodejs \
+            --config=p/owasp-top-ten \
+            --config=p/javascript \
+            --config=p/typescript \
+            --config=p/expressjs \
+            --sarif \
+            --output=/src/semgrep-results.sarif
+      - name: Upload Semgrep results
+        uses: github/codeql-action/upload-sarif@v4
+        if: always()
+        with:
+          sarif_file: semgrep-results.sarif
+          category: semgrep
+
+  sca-snyk:
+    name: "CI · SCA Snyk"
+    runs-on: ubuntu-latest
+    needs: [test]
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v6
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: "npm"
+      - name: Install dependencies
+        run: npm install
+      - name: Run Snyk
+        uses: snyk/actions/node@master
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          command: test
+          args: >
+            --severity-threshold=high
+            --sarif-file-output=snyk-results.sarif
+      - name: Upload Snyk SARIF
+        uses: github/codeql-action/upload-sarif@v4
+        if: ${{ always() && hashFiles('snyk-results.sarif') != '' }}
+        with:
+          sarif_file: snyk-results.sarif
+          category: snyk-sca
+
+  # ─────────────────────────────────────────
+  # FASE 2 – CD  (gate: build + todos los SAST/SCA)
+  # ─────────────────────────────────────────
+  deploy:
+    name: "CD · Deploy"
+    runs-on: ubuntu-latest
+    needs: [build, sast-secrets, sast-codeql, sast-semgrep, sca-snyk]
+    environment: production
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Deploy container
+        run: |
+          docker pull ghcr.io/${{ env.IMAGE_NAME }}:$(echo ${{ github.sha }} | cut -c1-7)
+          docker stop app-prod || true
+          docker rm   app-prod || true
+          docker run -d \
+            --name app-prod \
+            -p 3000:3000 \
+            --restart unless-stopped \
+            ghcr.io/${{ env.IMAGE_NAME }}:$(echo ${{ github.sha }} | cut -c1-7)
+
+      - name: Verify deployment
+        run: |
+          for i in $(seq 1 15); do
+            if curl -sf http://localhost:3000; then
+              echo "Deploy exitoso"
+              exit 0
+            fi
+            echo "Esperando... ($i/15)"
+            sleep 3
+          done
+          echo "Deploy no respondió a tiempo" >&2
+          exit 1
+
+  dast:
+    name: "CD · DAST ZAP"
+    runs-on: ubuntu-latest
+    needs: [deploy]
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Run app container
+        run: |
+          docker run -d \
+            --name app-dast \
+            -p 3000:3000 \
+            ghcr.io/${{ env.IMAGE_NAME }}:$(echo ${{ github.sha }} | cut -c1-7)
+
+      - name: Wait for app to be ready
+        run: |
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:3000; then
+              echo "App is up"
+              exit 0
+            fi
+            echo "Waiting... ($i/30)"
+            sleep 2
+          done
+          echo "App did not start in time" >&2
+          docker logs app-dast
+          exit 1
+
+      - name: Run OWASP ZAP baseline scan
+        run: |
+          docker run --rm \
+            --network host \
+            -v "$(pwd):/zap/wrk:rw" \
+            ghcr.io/zaproxy/zaproxy:stable \
+            zap-baseline.py \
+            -t http://localhost:3000 \
+            -r zap-report.html \
+            -J zap-report.json \
+            -x zap-report.xml \
+            -I
+
+      - name: Convert ZAP JSON to SARIF
+        if: always()
+        run: |
+          python3 -c "
+          import json, sys, os
+
+          report_path = 'zap-report.json'
+          empty_sarif = {
+            'version': '2.1.0',
+            '\$schema': 'https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json',
+            'runs': [{'tool': {'driver': {'name': 'OWASP ZAP', 'version': 'stable', 'rules': []}}, 'results': []}]
+          }
+
+          if not os.path.exists(report_path) or os.path.getsize(report_path) == 0:
+            print(json.dumps(empty_sarif, indent=2))
+            sys.exit(0)
+
+          with open(report_path) as f:
+            try:
+              data = json.load(f)
+            except json.JSONDecodeError:
+              print(json.dumps(empty_sarif, indent=2))
+              sys.exit(0)
+
+          rules = {}
+          results = []
+          sarif = {
+            'version': '2.1.0',
+            '\$schema': 'https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json',
+            'runs': [{'tool': {'driver': {'name': 'OWASP ZAP', 'version': 'stable', 'rules': []}}, 'results': []}]
+          }
+
+          for site in data.get('site', []):
+            for alert in site.get('alerts', []):
+              rule_id = alert.get('pluginid', 'unknown')
+              risk = alert.get('riskdesc', 'Informational')
+              level = 'warning'
+              if 'High' in risk:
+                level = 'error'
+              elif 'Informational' in risk or 'False' in risk:
+                level = 'note'
+              if rule_id not in rules:
+                rules[rule_id] = {
+                  'id': rule_id,
+                  'name': alert.get('alert', rule_id),
+                  'shortDescription': {'text': alert.get('alert', rule_id)},
+                  'fullDescription': {'text': alert.get('desc', '')},
+                  'helpUri': alert.get('reference', ''),
+                  'properties': {'security-severity': str(alert.get('riskcode', 0))}
+                }
+              for instance in alert.get('instances', [{}]):
+                results.append({
+                  'ruleId': rule_id,
+                  'level': level,
+                  'message': {'text': instance.get('evidence', alert.get('alert', ''))},
+                  'locations': [{'physicalLocation': {
+                    'artifactLocation': {'uri': instance.get('uri', site.get('@name', 'unknown'))},
+                    'region': {'startLine': 1}
+                  }}]
+                })
+
+          sarif['runs'][0]['tool']['driver']['rules'] = list(rules.values())
+          sarif['runs'][0]['results'] = results
+          print(json.dumps(sarif, indent=2))
+          " > zap-results.sarif
+
+      - name: Upload ZAP SARIF to GitHub Code Scanning
+        uses: github/codeql-action/upload-sarif@v4
+        if: always()
+        with:
+          sarif_file: zap-results.sarif
+          category: owasp-zap-dast
+
+      - name: Upload ZAP HTML report
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: zap-report
+          path: zap-report.html
+
+      - name: Stop app container
+        if: always()
+        run: docker stop app-dast && docker rm app-dast
+
 
 jobs:
   init:
@@ -52,7 +431,7 @@ jobs:
         run: npm test
 
       - name: Upload test results
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         if: always()
         with:
           name: test-results
@@ -257,7 +636,7 @@ jobs:
           category: owasp-zap-dast
 
       - name: Upload ZAP HTML report
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         if: always()
         with:
           name: zap-report

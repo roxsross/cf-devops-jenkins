@@ -11,13 +11,3 @@ updates:
     labels:
       - "security"
       - "dependencies"
-
-  - package-ecosystem: "github-actions"
-    directory: "/"
-    schedule:
-      interval: "daily"
-    target-branch: "master"
-    open-pull-requests-limit: 5
-    labels:
-      - "security"
-      - "ci"
