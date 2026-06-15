@@ -258,14 +258,14 @@ jobs:
         run: |
           echo "target=${{ secrets.RENDER_APP_URL }}" >> $GITHUB_OUTPUT
 
-      # ── ZAP ──────────────────────────────────────────────
-      - name: Run OWASP ZAP baseline scan
+      # ── ZAP (action) ─────────────────────────────────────
+      - name: Run OWASP ZAP baseline scan (action)
         uses: zaproxy/action-baseline@v0.15.0
         with:
           target: ${{ steps.get-url.outputs.target }}
           token: ${{ secrets.GITHUB_TOKEN }}
           cmd_options: "-I"
-          artifact_name: zap-report
+          artifact_name: zap-report-action
           fail_action: false
 
       - name: Convert ZAP JSON to SARIF
@@ -278,6 +278,31 @@ jobs:
         with:
           sarif_file: zap-results.sarif
           category: owasp-zap-dast
+
+      # ── ZAP (docker) ─────────────────────────────────────
+      - name: Run OWASP ZAP baseline scan (docker)
+        if: always()
+        run: |
+          docker run --rm \
+            -v "$(pwd):/zap/wrk:rw" \
+            ghcr.io/zaproxy/zaproxy:stable \
+            zap-baseline.py \
+            -t "${{ secrets.RENDER_APP_URL }}" \
+            -r zap-docker-report.html \
+            -J zap-docker-report.json \
+            -x zap-docker-report.xml \
+            -I || true
+
+      - name: Upload ZAP Docker reports as artifact
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: zap-report-docker
+          path: |
+            zap-docker-report.html
+            zap-docker-report.json
+            zap-docker-report.xml
+          if-no-files-found: ignore
 
       # ── NUCLEI ───────────────────────────────────────────
       - name: Run Nuclei scan

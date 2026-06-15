@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Convierte el reporte JSON de OWASP ZAP a formato SARIF 2.1.0."""
 
+import html
 import json
 import os
+import re
 import sys
 
 INPUT = os.getenv("ZAP_JSON", "report_json.json")
@@ -18,6 +20,28 @@ EMPTY_SARIF = {
 def write(data):
     with open(OUTPUT, "w") as f:
         json.dump(data, f, indent=2)
+
+
+def extract_first_url(raw: str) -> str:
+    """Extrae la primera URL válida de un string que puede tener HTML encoded."""
+    decoded = html.unescape(raw)
+    # Quitar tags HTML
+    clean = re.sub(r"<[^>]+>", " ", decoded)
+    # Buscar primera URL
+    match = re.search(r"https?://[^\s\"'<>]+", clean)
+    return match.group(0).rstrip(".,;") if match else ""
+
+
+def uri_to_relative(full_uri: str, base_url: str) -> str:
+    """Convierte una URL absoluta a path relativo para SARIF."""
+    if base_url and full_uri.startswith(base_url):
+        rel = full_uri[len(base_url):].lstrip("/")
+        return rel if rel else "index.html"
+    # Si es una URL externa o no matchea, retornar solo el path
+    match = re.search(r"https?://[^/]+/(.*)", full_uri)
+    if match:
+        return match.group(1) or "index.html"
+    return full_uri
 
 
 if not os.path.exists(INPUT) or os.path.getsize(INPUT) == 0:
@@ -36,6 +60,8 @@ with open(INPUT) as f:
 rules, results = {}, []
 
 for site in data.get("site", []):
+    base_url = site.get("@name", "").rstrip("/")
+
     for alert in site.get("alerts", []):
         rid = alert.get("pluginid", "unknown")
         risk = alert.get("riskdesc", "Informational")
@@ -52,18 +78,20 @@ for site in data.get("site", []):
                 "id": rid,
                 "name": alert.get("alert", rid),
                 "shortDescription": {"text": alert.get("alert", rid)},
-                "fullDescription": {"text": alert.get("desc", "")},
-                "helpUri": alert.get("reference", ""),
+                "fullDescription": {"text": html.unescape(re.sub(r"<[^>]+>", "", alert.get("desc", "")))},
+                "helpUri": extract_first_url(alert.get("reference", "")),
                 "properties": {"security-severity": str(alert.get("riskcode", 0))},
             }
 
         for inst in alert.get("instances", [{}]):
+            abs_uri = inst.get("uri", base_url)
+            rel_path = uri_to_relative(abs_uri, base_url)
             results.append({
                 "ruleId": rid,
                 "level": level,
-                "message": {"text": inst.get("evidence", alert.get("alert", ""))},
+                "message": {"text": inst.get("evidence", alert.get("alert", "")) or alert.get("alert", rid)},
                 "locations": [{"physicalLocation": {
-                    "artifactLocation": {"uri": inst.get("uri", site.get("@name", "unknown"))},
+                    "artifactLocation": {"uri": rel_path, "uriBaseId": "%SRCROOT%"},
                     "region": {"startLine": 1},
                 }}],
             })
