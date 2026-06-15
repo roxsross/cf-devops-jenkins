@@ -5,6 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Mi Sitio - Desplegado con Jenkins</title>
     <link rel="stylesheet" href="styles.css">
+    <!-- ⚠️  VULN-5: librería jQuery desactualizada con CVEs conocidos -->
+    <!-- Detectado por: Semgrep (retire.js), ZAP -->
+    <script src="https://code.jquery.com/jquery-1.8.3.min.js"></script>
 </head>
 <body>
     <div class="container">
