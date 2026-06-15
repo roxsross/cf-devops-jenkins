@@ -220,12 +220,15 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Pull image for Trivy
-        run: docker pull ghcr.io/${{ env.IMAGE_NAME }}:${{ github.sha }}
+        run: |
+          SHORT_SHA="${GITHUB_SHA::7}"
+          docker pull ghcr.io/${{ env.IMAGE_NAME }}:${SHORT_SHA}
+          echo "SHORT_SHA=${SHORT_SHA}" >> $GITHUB_ENV
 
       - name: Run Trivy - image scan
         uses: aquasecurity/trivy-action@v0.36.0
         with:
-          image-ref: ghcr.io/${{ env.IMAGE_NAME }}:${{ github.sha }}
+          image-ref: ghcr.io/${{ env.IMAGE_NAME }}:${{ env.SHORT_SHA }}
           format: sarif
           output: trivy-image.sarif
           severity: CRITICAL,HIGH,MEDIUM
