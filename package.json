@@ -4,7 +4,7 @@
   "description": "Sitio web estático desplegado con Jenkins a S3",
   "scripts": {
     "start": "npx serve -l 3000 .",
-    "test": "jest --verbose"
+    "test": "jest --verbose --coverage"
   },
   "devDependencies": {
     "jest": "^29.7.0"

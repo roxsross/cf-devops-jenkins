@@ -5,6 +5,7 @@ on:
 
 env:
   IMAGE_NAME: ${{ github.repository_owner }}/mi-sitio-web
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   # ─────────────────────────────────────────
@@ -59,6 +60,7 @@ jobs:
         with:
           name: test-results
           path: coverage/
+          if-no-files-found: ignore
 
   # build y los 4 SAST/SCA corren en paralelo después de test
   build:
@@ -256,8 +258,9 @@ jobs:
         run: |
           echo "target=${{ secrets.RENDER_APP_URL }}" >> $GITHUB_OUTPUT
 
+      # ── ZAP ──────────────────────────────────────────────
       - name: Run OWASP ZAP baseline scan
-        uses: zaproxy/action-baseline@v0.14.0
+        uses: zaproxy/action-baseline@v0.15.0
         with:
           target: ${{ steps.get-url.outputs.target }}
           token: ${{ secrets.GITHUB_TOKEN }}
@@ -265,4 +268,45 @@ jobs:
           artifact_name: zap-report
           fail_action: false
 
+      - name: Convert ZAP JSON to SARIF
+        if: always()
+        run: python3 .github/scripts/zap-to-sarif.py
+
+      - name: Upload ZAP SARIF to GitHub Code Scanning
+        uses: github/codeql-action/upload-sarif@v4
+        if: always()
+        with:
+          sarif_file: zap-results.sarif
+          category: owasp-zap-dast
+
+      # ── NUCLEI ───────────────────────────────────────────
+      - name: Run Nuclei scan
+        if: always()
+        run: |
+          docker run --rm \
+            -v "$(pwd):/output" \
+            projectdiscovery/nuclei:latest \
+            -u "${{ secrets.RENDER_APP_URL }}" \
+            -t http/misconfiguration \
+            -t http/exposures \
+            -t http/technologies \
+            -severity low,medium,high,critical \
+            -sarif-export /output/nuclei-results.sarif \
+            -o /output/nuclei-results.txt \
+            -silent || true
+
+      - name: Upload Nuclei SARIF to GitHub Code Scanning
+        uses: github/codeql-action/upload-sarif@v4
+        if: always()
+        with:
+          sarif_file: nuclei-results.sarif
+          category: nuclei-dast
+
+      - name: Upload Nuclei report as artifact
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: nuclei-report
+          path: nuclei-results.txt
+          if-no-files-found: ignore
 
