@@ -1,7 +1,7 @@
 name: "devsecops tools"
 on: 
     push: 
-        branches: [develop]
+        branches: [master]
 jobs:
     sast-codeql:
         runs-on: ubuntu-latest
