@@ -1,0 +1,268 @@
+name: "CI/CD Pipeline"
+on:
+  push:
+    branches: [master]
+
+env:
+  IMAGE_NAME: ${{ github.repository_owner }}/mi-sitio-web
+  IMAGE_TAG: ${{ github.sha }}
+
+jobs:
+  init:
+    name: Init - Install dependencies
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Cache node_modules
+        uses: actions/cache@v4
+        with:
+          path: node_modules
+          key: ${{ runner.os }}-node-${{ hashFiles('package-lock.json') }}
+
+  test:
+    name: Test - Unit tests
+    runs-on: ubuntu-latest
+    needs: [init]
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Restore node_modules
+        uses: actions/cache@v4
+        with:
+          path: node_modules
+          key: ${{ runner.os }}-node-${{ hashFiles('package-lock.json') }}
+
+      - name: Run tests
+        run: npm test
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results
+          path: |
+            coverage/
+            junit.xml
+
+  build:
+    name: Build - Docker image
+    runs-on: ubuntu-latest
+    needs: [test]
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.meta.outputs.tags }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ env.IMAGE_NAME }}
+          tags: |
+            type=sha,prefix=,format=short
+            type=raw,value=latest
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+  deploy:
+    name: Deploy
+    runs-on: ubuntu-latest
+    needs: [build]
+    environment: production
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Deploy container
+        run: |
+          echo "Deploying image: ghcr.io/${{ env.IMAGE_NAME }}:${{ github.sha }}"
+          # Reemplazar con el comando de deploy real (docker run, kubectl, etc.)
+          docker pull ghcr.io/${{ env.IMAGE_NAME }}:$(echo ${{ github.sha }} | cut -c1-7)
+          docker stop app-prod || true
+          docker rm app-prod || true
+          docker run -d \
+            --name app-prod \
+            -p 3000:3000 \
+            --restart unless-stopped \
+            ghcr.io/${{ env.IMAGE_NAME }}:$(echo ${{ github.sha }} | cut -c1-7)
+
+      - name: Verify deployment
+        run: |
+          for i in $(seq 1 15); do
+            if curl -sf http://localhost:3000; then
+              echo "Deploy exitoso"
+              exit 0
+            fi
+            echo "Esperando... ($i/15)"
+            sleep 3
+          done
+          echo "Deploy no respondió a tiempo" >&2
+          exit 1
+
+  dast:
+    name: DAST - OWASP ZAP
+    runs-on: ubuntu-latest
+    needs: [deploy]
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Pull app image
+        run: |
+          docker pull ghcr.io/${{ env.IMAGE_NAME }}:$(echo ${{ github.sha }} | cut -c1-7)
+
+      - name: Run app container
+        run: |
+          docker run -d \
+            --name app-dast \
+            -p 3000:3000 \
+            ghcr.io/${{ env.IMAGE_NAME }}:$(echo ${{ github.sha }} | cut -c1-7)
+
+      - name: Wait for app to be ready
+        run: |
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:3000; then
+              echo "App is up"
+              exit 0
+            fi
+            echo "Waiting... ($i/30)"
+            sleep 2
+          done
+          echo "App did not start in time" >&2
+          docker logs app-dast
+          exit 1
+
+      - name: Run OWASP ZAP baseline scan
+        run: |
+          docker run --rm \
+            --network host \
+            -v "$(pwd):/zap/wrk:rw" \
+            ghcr.io/zaproxy/zaproxy:stable \
+            zap-baseline.py \
+            -t http://localhost:3000 \
+            -r zap-report.html \
+            -J zap-report.json \
+            -x zap-report.xml \
+            -I
+
+      - name: Convert ZAP JSON to SARIF
+        if: always()
+        run: |
+          python3 -c "
+          import json, sys, os
+
+          report_path = 'zap-report.json'
+          empty_sarif = {
+            'version': '2.1.0',
+            '\$schema': 'https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json',
+            'runs': [{'tool': {'driver': {'name': 'OWASP ZAP', 'version': 'stable', 'rules': []}}, 'results': []}]
+          }
+
+          if not os.path.exists(report_path) or os.path.getsize(report_path) == 0:
+            print(json.dumps(empty_sarif, indent=2))
+            sys.exit(0)
+
+          with open(report_path) as f:
+            try:
+              data = json.load(f)
+            except json.JSONDecodeError:
+              print(json.dumps(empty_sarif, indent=2))
+              sys.exit(0)
+
+          sarif = {
+            'version': '2.1.0',
+            '\$schema': 'https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json',
+            'runs': [{'tool': {'driver': {'name': 'OWASP ZAP', 'version': 'stable', 'rules': []}}, 'results': []}]
+          }
+
+          rules = {}
+          results = []
+
+          for site in data.get('site', []):
+            for alert in site.get('alerts', []):
+              rule_id = alert.get('pluginid', 'unknown')
+              risk = alert.get('riskdesc', 'Informational')
+              level = 'warning'
+              if 'High' in risk:
+                level = 'error'
+              elif 'Informational' in risk or 'False' in risk:
+                level = 'note'
+
+              if rule_id not in rules:
+                rules[rule_id] = {
+                  'id': rule_id,
+                  'name': alert.get('alert', rule_id),
+                  'shortDescription': {'text': alert.get('alert', rule_id)},
+                  'fullDescription': {'text': alert.get('desc', '')},
+                  'helpUri': alert.get('reference', ''),
+                  'properties': {'security-severity': str(alert.get('riskcode', 0))}
+                }
+
+              for instance in alert.get('instances', [{}]):
+                results.append({
+                  'ruleId': rule_id,
+                  'level': level,
+                  'message': {'text': instance.get('evidence', alert.get('alert', ''))},
+                  'locations': [{
+                    'physicalLocation': {
+                      'artifactLocation': {'uri': instance.get('uri', site.get('@name', 'unknown'))},
+                      'region': {'startLine': 1}
+                    }
+                  }]
+                })
+
+          sarif['runs'][0]['tool']['driver']['rules'] = list(rules.values())
+          sarif['runs'][0]['results'] = results
+          print(json.dumps(sarif, indent=2))
+          " > zap-results.sarif
+
+      - name: Upload ZAP SARIF to GitHub Code Scanning
+        uses: github/codeql-action/upload-sarif@v4
+        if: always()
+        with:
+          sarif_file: zap-results.sarif
+          category: owasp-zap-dast
+
+      - name: Upload ZAP HTML report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zap-report
+          path: zap-report.html
+
+      - name: Stop app container
+        if: always()
+        run: docker stop app-dast && docker rm app-dast
