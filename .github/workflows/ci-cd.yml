@@ -26,7 +26,7 @@ jobs:
         run: npm ci
 
       - name: Cache node_modules
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: node_modules
           key: ${{ runner.os }}-node-${{ hashFiles('package-lock.json') }}
@@ -45,7 +45,7 @@ jobs:
           cache: "npm"
 
       - name: Restore node_modules
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: node_modules
           key: ${{ runner.os }}-node-${{ hashFiles('package-lock.json') }}
@@ -85,7 +85,6 @@ jobs:
           images: ghcr.io/${{ env.IMAGE_NAME }}
           tags: |
             type=sha,prefix=,format=short
-            type=raw,value=latest
 
       - name: Build and push Docker image
         uses: docker/build-push-action@v6
@@ -94,6 +93,7 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          provenance: false
 
   sast-secrets:
     name: "CI · SAST Secrets"
@@ -289,83 +289,12 @@ jobs:
           exit 1
 
       - name: Run OWASP ZAP baseline scan
-        run: |
-          docker run --rm \
-            --network host \
-            -v "$(pwd):/zap/wrk:rw" \
-            ghcr.io/zaproxy/zaproxy:stable \
-            zap-baseline.py \
-            -t http://localhost:3000 \
-            -r zap-report.html \
-            -J zap-report.json \
-            -x zap-report.xml \
-            -I
-
-      - name: Convert ZAP JSON to SARIF
-        if: always()
-        run: |
-          python3 -c "
-          import json, sys, os
-
-          report_path = 'zap-report.json'
-          empty_sarif = {
-            'version': '2.1.0',
-            '\$schema': 'https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json',
-            'runs': [{'tool': {'driver': {'name': 'OWASP ZAP', 'version': 'stable', 'rules': []}}, 'results': []}]
-          }
-
-          if not os.path.exists(report_path) or os.path.getsize(report_path) == 0:
-            print(json.dumps(empty_sarif, indent=2))
-            sys.exit(0)
-
-          with open(report_path) as f:
-            try:
-              data = json.load(f)
-            except json.JSONDecodeError:
-              print(json.dumps(empty_sarif, indent=2))
-              sys.exit(0)
-
-          rules = {}
-          results = []
-          sarif = {
-            'version': '2.1.0',
-            '\$schema': 'https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json',
-            'runs': [{'tool': {'driver': {'name': 'OWASP ZAP', 'version': 'stable', 'rules': []}}, 'results': []}]
-          }
-
-          for site in data.get('site', []):
-            for alert in site.get('alerts', []):
-              rule_id = alert.get('pluginid', 'unknown')
-              risk = alert.get('riskdesc', 'Informational')
-              level = 'warning'
-              if 'High' in risk:
-                level = 'error'
-              elif 'Informational' in risk or 'False' in risk:
-                level = 'note'
-              if rule_id not in rules:
-                rules[rule_id] = {
-                  'id': rule_id,
-                  'name': alert.get('alert', rule_id),
-                  'shortDescription': {'text': alert.get('alert', rule_id)},
-                  'fullDescription': {'text': alert.get('desc', '')},
-                  'helpUri': alert.get('reference', ''),
-                  'properties': {'security-severity': str(alert.get('riskcode', 0))}
-                }
-              for instance in alert.get('instances', [{}]):
-                results.append({
-                  'ruleId': rule_id,
-                  'level': level,
-                  'message': {'text': instance.get('evidence', alert.get('alert', ''))},
-                  'locations': [{'physicalLocation': {
-                    'artifactLocation': {'uri': instance.get('uri', site.get('@name', 'unknown'))},
-                    'region': {'startLine': 1}
-                  }}]
-                })
-
-          sarif['runs'][0]['tool']['driver']['rules'] = list(rules.values())
-          sarif['runs'][0]['results'] = results
-          print(json.dumps(sarif, indent=2))
-          " > zap-results.sarif
+        uses: zaproxy/action-baseline@v0.14.0
+        with:
+          target: "http://localhost:3000"
+          rules_file_name: ".zap/rules.tsv"
+          cmd_options: "-I"
+          artifact_name: zap-report
 
       - name: Upload ZAP SARIF to GitHub Code Scanning
         uses: github/codeql-action/upload-sarif@v4
@@ -373,13 +302,6 @@ jobs:
         with:
           sarif_file: zap-results.sarif
           category: owasp-zap-dast
-
-      - name: Upload ZAP HTML report
-        uses: actions/upload-artifact@v7
-        if: always()
-        with:
-          name: zap-report
-          path: zap-report.html
 
       - name: Stop app container
         if: always()
