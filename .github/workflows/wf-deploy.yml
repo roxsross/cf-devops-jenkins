@@ -1,0 +1,34 @@
+name: "WF · Deploy"
+
+on:
+  workflow_call:
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  deploy:
+    name: "CD · Deploy (Render)"
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Trigger Render deploy
+        run: |
+          curl -fsSL --retry 3 \
+            "${{ secrets.RENDER_DEPLOY_HOOK }}"
+          echo "Deploy disparado en Render"
+
+      - name: Wait for deployment to be live
+        run: |
+          URL="${{ secrets.RENDER_APP_URL }}"
+          echo "Verificando $URL ..."
+          for i in $(seq 1 24); do
+            if curl -sf "$URL" > /dev/null; then
+              echo "Deploy exitoso en $URL"
+              exit 0
+            fi
+            echo "Esperando... ($i/24)"
+            sleep 10
+          done
+          echo "Deploy no respondió a tiempo" >&2
+          exit 1

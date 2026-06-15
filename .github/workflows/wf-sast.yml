@@ -1,0 +1,95 @@
+name: "WF · SAST"
+
+on:
+  workflow_call:
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  # ── Betterleaks (secret scanning) ────────────────────────
+  sast-secrets:
+    name: "CI · SAST Secrets"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Scan con Betterleaks
+        run: |
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            -e HOME=/tmp \
+            -v "$(pwd):/repo" \
+            ghcr.io/betterleaks/betterleaks:latest \
+            git /repo \
+              --report-format sarif \
+              --report-path /repo/betterleaks.sarif \
+              --exit-code 0 \
+              -v
+        continue-on-error: true
+
+      - name: Upload Betterleaks SARIF
+        uses: github/codeql-action/upload-sarif@v4
+        if: always()
+        with:
+          sarif_file: betterleaks.sarif
+          category: betterleaks
+
+  # ── CodeQL ───────────────────────────────────────────────
+  sast-codeql:
+    name: "CI · SAST CodeQL"
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v4
+        with:
+          languages: javascript-typescript
+          build-mode: none
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v4
+        with:
+          category: "/language:javascript-typescript"
+
+  # ── Semgrep ──────────────────────────────────────────────
+  sast-semgrep:
+    name: "CI · SAST Semgrep"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Run Semgrep
+        run: |
+          docker run --rm \
+            -v "$(pwd):/src" \
+            semgrep/semgrep:latest \
+            semgrep scan \
+            --config=p/security-audit \
+            --config=p/nodejs \
+            --config=p/owasp-top-ten \
+            --config=p/javascript \
+            --config=p/typescript \
+            --config=p/expressjs \
+            --sarif \
+            --output=/src/semgrep-results.sarif
+
+      - name: Upload Semgrep SARIF
+        uses: github/codeql-action/upload-sarif@v4
+        if: always()
+        with:
+          sarif_file: semgrep-results.sarif
+          category: semgrep

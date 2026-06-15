@@ -1,0 +1,104 @@
+name: "WF · DAST"
+
+on:
+  workflow_call:
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  dast:
+    name: "CD · DAST ZAP + Nuclei"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+      issues: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Get target URL
+        id: get-url
+        run: echo "target=${{ secrets.RENDER_APP_URL }}" >> $GITHUB_OUTPUT
+
+      # ── ZAP (action) ─────────────────────────────────────
+      - name: Run OWASP ZAP baseline scan (action)
+        uses: zaproxy/action-baseline@v0.15.0
+        with:
+          target: ${{ steps.get-url.outputs.target }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+          cmd_options: "-I"
+          artifact_name: zap-report-action
+          fail_action: false
+
+      - name: Convert ZAP JSON to SARIF
+        if: always()
+        run: python3 .github/scripts/zap-to-sarif.py
+
+      - name: Upload ZAP SARIF to GitHub Code Scanning
+        uses: github/codeql-action/upload-sarif@v4
+        if: always()
+        with:
+          sarif_file: zap-results.sarif
+          category: owasp-zap-dast
+
+      # ── ZAP (docker) ─────────────────────────────────────
+      - name: Run OWASP ZAP baseline scan (docker)
+        if: always()
+        run: |
+          docker run --rm \
+            -v "$(pwd):/zap/wrk:rw" \
+            ghcr.io/zaproxy/zaproxy:stable \
+            zap-baseline.py \
+            -t "${{ secrets.RENDER_APP_URL }}" \
+            -r zap-docker-report.html \
+            -J zap-docker-report.json \
+            -x zap-docker-report.xml \
+            -I || true
+
+      - name: Upload ZAP Docker reports as artifact
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: zap-report-docker
+          path: |
+            zap-docker-report.html
+            zap-docker-report.json
+            zap-docker-report.xml
+          if-no-files-found: ignore
+
+      # ── NUCLEI ───────────────────────────────────────────
+      - name: Run Nuclei scan
+        if: always()
+        run: |
+          docker run --rm \
+            -v "$(pwd):/output" \
+            projectdiscovery/nuclei:latest \
+            -u "${{ secrets.RENDER_APP_URL }}" \
+            -t http/misconfiguration \
+            -t http/exposures \
+            -t http/technologies \
+            -severity low,medium,high,critical \
+            -sarif-export /output/nuclei-results.sarif \
+            -o /output/nuclei-results.txt \
+            -silent || true
+
+      - name: Validate Nuclei SARIF
+        if: always()
+        run: |
+          [ -s nuclei-results.sarif ] || echo '{"version":"2.1.0","$schema":"https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json","runs":[{"tool":{"driver":{"name":"Nuclei","version":"latest","rules":[]}},"results":[]}]}' > nuclei-results.sarif
+
+      - name: Upload Nuclei SARIF to GitHub Code Scanning
+        uses: github/codeql-action/upload-sarif@v4
+        if: always()
+        with:
+          sarif_file: nuclei-results.sarif
+          category: nuclei-dast
+
+      - name: Upload Nuclei report as artifact
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: nuclei-report
+          path: nuclei-results.txt
+          if-no-files-found: ignore
